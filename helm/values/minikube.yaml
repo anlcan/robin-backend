@@ -1,0 +1,8 @@
+# build the image with docker
+# docker build . -t k24/boiler-plate:latest
+# mk image load k24/boiler-plate:latest
+# helm upgrade boiler-plate ./boiler-plate -f ./boiler-plate/values/minikube.yaml
+
+image:
+  name: "k24/boiler-plate"
+  version: "latest"

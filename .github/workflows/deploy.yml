@@ -1,0 +1,118 @@
+---
+
+name: Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      Platform:
+        type: choice
+        description: Choose the platform where you would like to deploy
+        required: true
+        options:
+          - integration-1
+          - integration-2
+          - integration-3
+          - qa-1
+          - qa-2
+          - r-17-staging
+          - r-17-live
+      image_tag:
+        description: Tag of the image you would like to deploy
+        required: false
+        default: latest
+
+run-name: ${{ inputs.Platform }} deployment
+
+env:
+  # Env variables used to set up additional env variables
+  QA_ACCOUNT_ID: "726569450381"
+  QA_STAGE_NAME: "aws.qa"
+  LIVE_ACCOUNT_ID: "433833759926"
+  LIVE_STAGE_NAME: "aws.live"
+  ROLE_NAME: "k8s-github-role"
+  # Cluster connection setup
+  VPN_PROFILE: ${{ secrets.VPN_PROFILE }}
+  GIT_TOKEN: ${{ secrets.GH_TOKEN }}
+  PLATFORM_CODE_VALUES_DIR: "kfzteile24/platform-code/master/helm/values"
+  # Platform Config:
+  PLATFORM_ID: ${{ github.event.inputs.Platform }}
+  KUBECONFIG: "kube-config/${{ github.event.inputs.Platform }}.conf"
+  # Packages Version:
+  HELM_VERSION: "3.10.3"
+  KUBECTL_VERSION: "1.25.2"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy_service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set environment variables
+        run: |
+          if [[ ${{ github.event.inputs.Platform }} == "r-17-staging" ]] || \
+             [[ ${{ github.event.inputs.Platform }} == "r-17-live" ]];
+          then
+            echo "PLATFORM_ENV=${{ env.LIVE_STAGE_NAME }}" >> $GITHUB_ENV
+            echo "ROLE_ARN=arn:aws:iam::${{ env.LIVE_ACCOUNT_ID }}:role/${{ env.ROLE_NAME }}" >> $GITHUB_ENV
+            if [[ ${{ github.event.inputs.Platform }}  == "r-17-live" ]];
+            then
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_LIVE }}" >> $GITHUB_ENV
+            else
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_STAGING }}" >> $GITHUB_ENV
+            fi
+          else
+            echo "PLATFORM_ENV=${{ env.QA_STAGE_NAME }}" >> $GITHUB_ENV
+            echo "ROLE_ARN=arn:aws:iam::${{ env.QA_ACCOUNT_ID }}:role/${{ env.ROLE_NAME }}" >> $GITHUB_ENV
+            if [[ ${{ github.event.inputs.Platform }} == "integration-1" ]];
+            then
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_INT_1 }}" >> $GITHUB_ENV
+            elif [[ ${{ github.event.inputs.Platform }} == "integration-2" ]];
+            then
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_INT_2 }}" >> $GITHUB_ENV
+            elif [[ ${{ github.event.inputs.Platform }} == "integration-3" ]];
+            then
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_INT_3 }}" >> $GITHUB_ENV
+            elif [[ ${{ github.event.inputs.Platform }} == "qa-1" ]];
+            then
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_QA_1 }}" >> $GITHUB_ENV
+            elif [[ ${{ github.event.inputs.Platform }} == "qa-2" ]];
+            then
+              echo "KUBECONFIG_BASE64=${{ secrets.KUBECONFIG_QA_2 }}" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-region: eu-central-1
+          role-to-assume: ${{ env.ROLE_ARN }}
+          role-session-name: ${{ github.event.repository.name }}-github-action
+
+      - name: Setting up cluster connection
+        uses: kfzteile24/platform-connectivity-preparation-action@v4.1
+        with:
+          VPN_PROFILE: ${{ env.VPN_PROFILE }}
+          GIT_TOKEN: ${{ env.GIT_TOKEN }}
+          PLATFORM_CODE_VALUES_DIR: ${{ env.PLATFORM_CODE_VALUES_DIR }}
+          PLATFORM_ID: ${{ env.PLATFORM_ID }}
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          KUBECONFIG_BASE64: ${{ env.KUBECONFIG_BASE64 }}
+          PLATFORM_ENV: ${{ env.PLATFORM_ENV }}
+          HELM_VERSION: ${{ env.HELM_VERSION }}
+          KUBECTL_VERSION: ${{ env.KUBECTL_VERSION }}
+
+      - name: Deploy helm chart
+        run: |
+          helm upgrade --install --wait --timeout 5m --force \
+                      ${{ github.event.repository.name }} \
+                      helm/ \
+                      --namespace default \
+                      --values helm/values.yaml \
+                      --values k8s/${{ env.PLATFORM_ID }}/platform-config.yaml \
+                      --values k8s/${{ env.PLATFORM_ID }}/stage-config.yaml
